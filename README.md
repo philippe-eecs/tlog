@@ -78,10 +78,11 @@ tlog.finish()
 Then, in another tmux pane:
 
 ```bash
-tlog                # == tlog watch: live dashboard of the latest run
-tlog ls             # table of runs: step, last loss, slurm job, status
-tlog tail           # live captured console output of the latest run
-tlog serve          # web UI on :8585 (VS Code auto-forwards the port)
+tlog                          # == tlog watch: live dashboard of the latest run
+tlog watch baseline high-lr   # overlay multiple runs (or a project dir) in one TUI
+tlog ls                       # table of runs: step, last loss, slurm job, status
+tlog tail                     # live captured console output of the latest run
+tlog serve                    # web UI on :8585 (VS Code auto-forwards the port)
 tlog export run-a run-b -o compare.html    # side-by-side report
 ```
 
@@ -193,12 +194,26 @@ Runs land in `./runs` by default; set `TLOG_DIR=/scratch/$USER/runs` (or pass
 
 ## The viewers in detail
 
-**`tlog watch [run]`** — braille line charts with min/max bands, one page per
-metric group plus a console page; the grid auto-sizes to the pane and scrolls
-when a group has more charts than fit. Keys: `←/→` pages · `↑/↓` (or `j/k`)
-scroll charts / console history · `1`–`9` force column count, `0` auto (or
-`--cols N`) · `s` smoothing (EMA 0 → 0.6 → 0.9 → 0.99) · `l` log scale ·
-`q` quit.
+**`tlog watch [runs...]`** — braille line charts with min/max bands, one page
+per metric group plus media and console pages; the grid auto-sizes to the
+pane and scrolls when a group has more charts than fit.
+
+- **Compare runs**: `tlog watch baseline high-lr` (or name a project dir to
+  take all its runs) overlays every metric wandb-style, one color per run,
+  with a legend line. The `r` key cycles which run the console page shows.
+- **Media page**: logged images render *in the terminal* — by default as
+  half-block thumbnails (`▀` + 24-bit color), which work in every terminal
+  including through tmux over SSH. Runs are columns, steps are rows, exactly
+  like the web media tab. On kitty/Ghostty (kitty graphics protocol) or
+  iTerm2/WezTerm (inline images), true pixel images are used automatically —
+  except inside tmux, which usually eats those escapes, so tmux gets
+  half-block unless you force a protocol with `--images kitty|iterm2`.
+  (`--images off` hides the page.)
+
+Keys: `←/→` pages · `↑/↓` (or `j/k`) scroll charts / media steps / console
+history · `m` cycle media key · `r` cycle focused run · `1`–`9` force column
+count, `0` auto (or `--cols N`) · `s` smoothing (EMA 0 → 0.6 → 0.9 → 0.99) ·
+`l` log scale · `q` quit.
 
 **`tlog serve [root]`** — open `http://localhost:8585` through VS Code Remote
 (auto port-forward) or `ssh -L 8585:localhost:8585 cluster`. Multi-run

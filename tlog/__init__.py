@@ -20,7 +20,7 @@ from typing import Any
 
 from .run import NoopRun, Run
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["init", "log", "log_images", "finish", "run", "Run", "NoopRun"]
 
 run: Run | NoopRun | None = None  # the active run, set by init()

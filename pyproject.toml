@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tlog-ml"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lightweight, local-first experiment logger for neural network training — wandb-shaped API, zero deps, terminal + HTML + web viewers"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,7 +27,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "pillow", "numpy"]  # widen test coverage (PIL/array paths)
 
 [project.urls]
 Repository = "https://github.com/philippe-eecs/tlog"

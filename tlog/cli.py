@@ -82,8 +82,31 @@ def cmd_watch(args: argparse.Namespace) -> None:
     from .tui import watch
 
     root = args.dir or default_root()
-    info = _resolve_or_die(args.run, root)
-    watch(info, interval=args.interval, ncols=args.cols)
+    if not args.runs:
+        infos = [_resolve_or_die(None, root)]
+    else:
+        infos = []
+        for spec in args.runs:
+            expanded = _expand_project(spec, root)
+            if expanded:
+                infos.extend(expanded)
+            else:
+                infos.append(_resolve_or_die(spec, root))
+        # de-dup while preserving order
+        seen: set = set()
+        infos = [r for r in infos if not (r.path in seen or seen.add(r.path))]
+    watch(infos, interval=args.interval, ncols=args.cols, images=args.images)
+
+
+def _expand_project(spec: str, root: str) -> list[store.RunInfo]:
+    """If `spec` names a project directory (not a single run), return all its
+    runs so `tlog watch demo` compares the whole project."""
+    for base in (Path(spec), Path(root) / spec):
+        if base.is_dir() and not (base / "meta.json").is_file():
+            runs = store.find_runs(base)
+            if runs:
+                return runs
+    return []
 
 
 def cmd_tail(args: argparse.Namespace) -> None:
@@ -132,12 +155,22 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command")
 
     p_watch = sub.add_parser("watch", help="live terminal dashboard (default command)")
-    p_watch.add_argument("run", nargs="?", help="run dir, id, or name (default: latest run)")
+    p_watch.add_argument(
+        "runs", nargs="*",
+        help="runs to show (dir/id/name, or a project dir to compare all its "
+        "runs); default: latest run",
+    )
     p_watch.add_argument("--dir", help="runs root (default: $TLOG_DIR or ./runs)")
     p_watch.add_argument("--interval", type=float, default=2.0, help="refresh seconds")
     p_watch.add_argument(
         "--cols", type=int, default=None,
         help="chart columns (default: auto from pane width; keys 1-9/0 at runtime)",
+    )
+    p_watch.add_argument(
+        "--images", choices=["auto", "halfblock", "kitty", "iterm2", "off"],
+        default="auto",
+        help="media page image renderer (auto: halfblock in tmux, protocols "
+        "in kitty/iTerm2/WezTerm/Ghostty)",
     )
     p_watch.set_defaults(func=cmd_watch)
 
