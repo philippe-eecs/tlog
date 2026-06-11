@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>{{UPLOT_CSS}}</style>
+<style>{{CSS}}</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar"></aside>
+  <main id="main">
+    <div id="topbar">
+      <div id="tabs"></div>
+      <div id="status-note"></div>
+    </div>
+    <div id="content"></div>
+  </main>
+</div>
+<div id="lightbox" class="hidden"></div>
+<script>{{UPLOT_JS}}</script>
+<script>
+window.TLOG_MODE = "{{MODE}}";
+window.TLOG_DATA = {{DATA}};
+</script>
+<script>{{APP_JS}}</script>
+</body>
+</html>

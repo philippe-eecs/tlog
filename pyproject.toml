@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tlog-ml"
+version = "0.1.0"
+description = "Lightweight, local-first experiment logger for neural network training — wandb-shaped API, zero deps, terminal + HTML + web viewers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Philippe Hansen-Estruch" }]
+keywords = ["experiment-tracking", "logging", "machine-learning", "wandb", "slurm", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Logging",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Repository = "https://github.com/philippe-eecs/tlog"
+Issues = "https://github.com/philippe-eecs/tlog/issues"
+
+[project.scripts]
+tlog = "tlog.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tlog*"]
+
+[tool.setuptools.package-data]
+tlog = ["frontend/*", "frontend/vendor/*"]
