@@ -226,6 +226,41 @@ console.
 file (images downscaled to ≤512px by default; `--max-image-px 0` keeps
 originals). No server, no internet — works in VS Code's HTML preview.
 
+**`tlog report spec.md [runs...]`** — custom pages: write plain markdown and
+drop in ```` ```tlog ```` blocks where you want live elements, then render to
+one self-contained HTML file (`--open` pops a browser). Prose narrates;
+blocks pull from the runs:
+
+````markdown
+## Eval quality
+
+FID is the one metric where high-lr finishes ahead.
+
+```tlog chart
+key: eval/fid
+smooth: 0.9        # optional EMA; raw stays as a faint line
+logy: true
+runs: baseline, high-lr   # optional — defaults to the runs on the CLI
+```
+
+```tlog table
+columns: config.lr, eval/fid min, eval/ssim max, loss/total last
+```
+
+```tlog images
+key: eval/recon
+last: 2            # or steps: 500, 1500
+```
+````
+
+Three block types: `chart` (multi-run SVG overlay), `table` (one row per
+run; columns are metric keys with an optional `min`/`max`/`last` aggregator,
+or `config.*` values), and `images` (runs-as-columns × steps-as-rows grid).
+Because a run is just files and the spec is just markdown, reports are easy
+for both humans and coding agents to compose — ask an agent to inspect your
+runs and it can write the analysis *and* the page that shows the evidence
+(see `examples/report.md`).
+
 ## Demo without a GPU
 
 ```bash

@@ -1,4 +1,4 @@
-"""`tlog` command line: watch (default), ls, tail, export, serve, rm."""
+"""`tlog` command line: watch (default), ls, tail, export, report, serve, rm."""
 
 from __future__ import annotations
 
@@ -129,6 +129,27 @@ def cmd_export(args: argparse.Namespace) -> None:
     print(f"wrote {out} ({size_kb:,.0f} KB, {len(runs)} run{'s' * (len(runs) != 1)})")
 
 
+def cmd_report(args: argparse.Namespace) -> None:
+    from .report import report_html
+
+    root = args.dir or default_root()
+    infos = []
+    for spec in args.runs:
+        expanded = _expand_project(spec, root)
+        infos.extend(expanded or [_resolve_or_die(spec, root)])
+    seen: set = set()
+    infos = [r for r in infos if not (r.path in seen or seen.add(r.path))]
+    if not infos:
+        infos = store.find_runs(root)
+    out = report_html(
+        Path(args.spec), infos, root,
+        output=Path(args.output) if args.output else None,
+        max_image_px=args.max_image_px, open_browser=args.open,
+    )
+    size_kb = out.stat().st_size / 1024
+    print(f"wrote {out} ({size_kb:,.0f} KB)")
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     from .server import serve
 
@@ -193,6 +214,23 @@ def main(argv: list[str] | None = None) -> None:
         help="downscale embedded images to this max side (0 = keep original)",
     )
     p_export.set_defaults(func=cmd_export)
+
+    p_report = sub.add_parser(
+        "report", help="render a markdown spec with ```tlog blocks into HTML"
+    )
+    p_report.add_argument("spec", help="markdown file with ```tlog chart/table/images blocks")
+    p_report.add_argument(
+        "runs", nargs="*",
+        help="default run set for blocks without runs: (default: all under --dir)",
+    )
+    p_report.add_argument("-o", "--output", help="output file (default: <spec>.html)")
+    p_report.add_argument("--dir", help="runs root")
+    p_report.add_argument("--open", action="store_true", help="open in browser")
+    p_report.add_argument(
+        "--max-image-px", type=int, default=512,
+        help="downscale embedded images to this max side (0 = keep original)",
+    )
+    p_report.set_defaults(func=cmd_report)
 
     p_serve = sub.add_parser("serve", help="live web dashboard (port-forward friendly)")
     p_serve.add_argument("root", nargs="?", help="runs root (default: $TLOG_DIR or ./runs)")
