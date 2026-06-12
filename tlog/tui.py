@@ -342,7 +342,9 @@ class WatchApp:
         lines = top + body[:body_rows] + [footer]
         frame = "\x1b[H" + "\x1b[K\n".join(lines) + "\x1b[J"
 
-        if placements:
+        # kitty: clear placements every frame, even when this page has none,
+        # so images don't linger after leaving the media page
+        if placements or self.backend == "kitty":
             base = len(top)  # body starts at 1-based row base+1
             seqs = []
             if self.backend == "kitty":

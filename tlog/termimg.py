@@ -182,7 +182,10 @@ def kitty_id_for(path: Path) -> int:
 
 
 def kitty_delete_all() -> str:
-    return "\x1b_Ga=d,d=A,q=2\x1b\\"
+    """Delete all visible placements. Lowercase d=a keeps the transmitted
+    image data alive — uppercase would free it and break later a=p
+    placements that reuse the cached ids."""
+    return "\x1b_Ga=d,d=a,q=2\x1b\\"
 
 
 def render_kitty(

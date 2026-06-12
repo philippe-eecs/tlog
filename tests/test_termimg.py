@@ -104,6 +104,13 @@ def test_kitty_emitter_chunking():
     assert "a=p" in place and "i=7" in place
 
 
+def test_kitty_delete_keeps_image_data():
+    # d must be lowercase: uppercase frees transmitted data, breaking the
+    # place-by-id path on every frame after the first
+    assert "d=a" in termimg.kitty_delete_all()
+    assert "d=A" not in termimg.kitty_delete_all()
+
+
 def test_iterm2_emitter_roundtrip():
     png, _ = gradient_png(8, 8)
     seq = termimg.render_iterm2(png, width_cells=20)
