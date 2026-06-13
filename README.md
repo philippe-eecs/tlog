@@ -10,6 +10,7 @@ terminal:
 | **terminal dashboard** | `tlog watch` | live charts in a tmux pane — the default |
 | **live web dashboard** | `tlog serve` | wandb-like browser UI through an SSH/VS Code port-forward |
 | **self-contained HTML** | `tlog export -o report.html` | one file with charts + images; preview in VS Code, scp it, share it |
+| **custom report** | `tlog report spec.md` | a markdown narrative with live chart/table/image blocks — write it yourself or have a coding agent compose it |
 
 Everything is plain append-only JSONL in a run directory: grep-able,
 rsync-able, crash-safe, no daemon, no cloud, no account.
@@ -46,15 +47,22 @@ rsync-able, crash-safe, no daemon, no cloud, no account.
 ## Install
 
 ```bash
+# latest features (multi-run compare, terminal images, custom reports):
+pip install "git+https://github.com/philippe-eecs/tlog"
+
+# released to PyPI (currently 0.1.0 — older; the next tag publishes the rest):
 pip install tlog-ml          # distribution is tlog-ml; you still `import tlog`
-# or for development:
+
+# for development:
 git clone https://github.com/philippe-eecs/tlog && cd tlog
 pip install -e ".[dev]"
 ```
 
-The core has **zero dependencies** — nothing to conflict with your torch/jax
-pins. PIL is used opportunistically if present (image encoding, report
-downscaling); otherwise a pure-stdlib PNG encoder takes over.
+The `git+` form is the one to use on a fresh cluster today — it pulls `main`
+with everything below, no PyPI release needed. The core has **zero
+dependencies** — nothing to conflict with your torch/jax pins. PIL is used
+opportunistically if present (image encoding, report downscaling); otherwise
+a pure-stdlib PNG encoder takes over.
 
 ## Quickstart
 
@@ -260,6 +268,36 @@ Because a run is just files and the spec is just markdown, reports are easy
 for both humans and coding agents to compose — ask an agent to inspect your
 runs and it can write the analysis *and* the page that shows the evidence
 (see `examples/report.md`).
+
+## Let a coding agent review your runs
+
+Because a run is nothing but files on disk — `metrics.jsonl`, `config.json`,
+PNGs under `media/` — a coding agent (Claude Code, etc.) sitting on the same
+cluster can inspect a run with no API key, no server, and no browser: it
+greps the metrics, opens the images, and reads the config directly. `tlog
+report` is the other half of that loop — it gives the agent a way to *hand
+back* what it found as something you can actually look at.
+
+A typical remote-cluster workflow:
+
+```bash
+pip install "git+https://github.com/philippe-eecs/tlog"   # on the cluster
+# ... training writes runs to ./runs as usual ...
+```
+
+Then, in a Claude Code session on that cluster:
+
+> "Compare `baseline` and `high-lr`. Look at the loss curves and the eval
+> recon images, then write me a `tlog report` with your read on whether the
+> higher LR helped."
+
+The agent reads the JSONL and the PNGs, writes a `spec.md` with prose plus
+`chart`/`table`/`images` blocks, runs `tlog report spec.md baseline high-lr`,
+and you get a single self-contained `spec.html` — its analysis up top, the
+charts and side-by-side reconstructions as evidence below. scp it to your
+laptop, skim it, and reply with feedback; the agent revises the spec and
+re-renders. The diagrams, charts, and logs are all in one reviewable file,
+and the agent never needed anything but the run directory.
 
 ## Demo without a GPU
 
