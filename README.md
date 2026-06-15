@@ -1,16 +1,22 @@
 # tlog
 
-A lightweight, local-first experiment logger for neural network training.
-wandb-shaped API, **zero dependencies** in your training environment, and three
-clean ways to look at your runs from a SLURM cluster with nothing but a
-terminal:
+A local-first experiment logger **and a terminal review buddy** for working with
+a coding agent on a cluster. wandb-shaped logging, plus a way for an agent to
+show you full-res images, plots, and markdown **in the terminal** — and for you
+to leave comments in `$EDITOR` that the agent reads back. No browser, no cloud,
+no leaving the terminal.
 
-| viewer | command | when |
-|---|---|---|
-| **terminal dashboard** | `tlog watch` | live charts in a tmux pane — the default |
-| **live web dashboard** | `tlog serve` | wandb-like browser UI through an SSH/VS Code port-forward |
-| **self-contained HTML** | `tlog export -o report.html` | one file with charts + images; preview in VS Code, scp it, share it |
-| **custom report** | `tlog report spec.md` | a markdown narrative with live chart/table/image blocks — write it yourself or have a coding agent compose it |
+The headline is smart dispatch — **`tlog <thing>` just works**, where `<thing>`
+is a run, a project, a group, a saved set, or a file:
+
+| you run | tlog does |
+|---|---|
+| `tlog` | live dashboard of the latest run |
+| `tlog baseline high-lr` | overlay runs / a project / a group / a saved set, live |
+| `tlog plot.png` · `tlog notes.md` | render the image / markdown **in the terminal** (full-res on Ghostty/kitty) |
+| `tlog review analysis.md` | render a doc, then open `$EDITOR` to comment on it |
+| `tlog comments --json` | the agent reads your open comments and revises |
+| `tlog serve` / `tlog report` | browser dashboard / self-contained HTML report |
 
 Everything is plain append-only JSONL in a run directory: grep-able,
 rsync-able, crash-safe, no daemon, no cloud, no account.
@@ -39,7 +45,7 @@ rsync-able, crash-safe, no daemon, no cloud, no account.
  0.1174 ┤                         ⠁⠉⠉⠛⠊⠛⠲⠖⠴⠒⠤⡴⠦⣤   0.4672 ┤                         ⠉⠉⠉⠛⠊⠛⠲⠖⠴⠖⠤⠤⠦⣦
         10                                 1490           10                                 1490
 
- ←/→ pages · ↑/↓ scroll · 1-9 cols (auto) · s smooth (0) · l log (off) · q quit
+ ←/→ pages · ↑/↓ scroll · 1-9 cols (auto) · s smooth (0) · l log (off) · c comment · q quit
 ```
 
 *An actual `tlog watch` frame — braille-canvas charts in a plain tmux pane.*
@@ -47,22 +53,35 @@ rsync-able, crash-safe, no daemon, no cloud, no account.
 ## Install
 
 ```bash
-# latest features (multi-run compare, terminal images, custom reports):
-pip install "git+https://github.com/philippe-eecs/tlog"
-
-# released to PyPI (currently 0.1.0 — older; the next tag publishes the rest):
 pip install tlog-ml          # distribution is tlog-ml; you still `import tlog`
+pip install "tlog-ml[video]" # adds `tlog show clip.mp4` (bundled ffmpeg)
 
 # for development:
 git clone https://github.com/philippe-eecs/tlog && cd tlog
 pip install -e ".[dev]"
 ```
 
-The `git+` form is the one to use on a fresh cluster today — it pulls `main`
-with everything below, no PyPI release needed. The core has **zero
-dependencies** — nothing to conflict with your torch/jax pins. PIL is used
-opportunistically if present (image encoding, report downscaling); otherwise
-a pure-stdlib PNG encoder takes over.
+tlog has a single runtime dependency, **Pillow**, used for robust full-res
+image decode/encode in the terminal (it pip-installs cleanly on any cluster —
+no system libraries). torch / numpy are still only touched if your training
+code already imported them. Video support is the one optional extra and bundles
+its own ffmpeg via `imageio-ffmpeg`, so even `tlog show clip.mp4` needs no
+system binary.
+
+### Full-res images on a cluster (Ghostty, kitty, iTerm2 — even through tmux)
+
+tlog draws true-pixel images with the kitty or iTerm2 graphics protocol when it
+detects a capable terminal, and falls back to 24-bit half-blocks (`▀`) anywhere
+else, so something always renders — even SSH into a bare terminal. Two notes for
+the common cluster setup:
+
+- **Ghostty/kitty through tmux**: tmux normally eats graphics escapes. Turn on
+  passthrough once — `tmux set -g allow-passthrough on` — and tlog wraps its
+  escapes so full-res images come through. Add `export TLOG_TERM=ghostty` (or
+  `kitty`/`iterm2`) to your shell rc so tlog still knows the outer terminal can
+  show pixels (tmux hides the usual signals). Without these you get half-blocks
+  and a one-line hint explaining how to upgrade.
+- Force a backend any time with `--images kitty|iterm2|halfblock|off`.
 
 ## Quickstart
 
@@ -86,16 +105,60 @@ tlog.finish()
 Then, in another tmux pane:
 
 ```bash
-tlog                          # == tlog watch: live dashboard of the latest run
-tlog watch baseline high-lr   # overlay multiple runs (or a project dir) in one TUI
-tlog ls                       # table of runs: step, last loss, slurm job, status
-tlog tail                     # live captured console output of the latest run
+tlog                          # live dashboard of the latest run
+tlog baseline high-lr         # overlay runs / a project / a group / a saved set
+tlog ls                       # table of runs: group, step, last loss, status
+tlog show eval.png notes.md   # render images / markdown in the terminal
+tlog show baseline --console  # captured console output of a run
 tlog serve                    # web UI on :8585 (VS Code auto-forwards the port)
-tlog export run-a run-b -o compare.html    # side-by-side report
+tlog export a b -o compare.html    # one self-contained interactive HTML file
+tlog report spec.md a b            # markdown narrative with live blocks -> HTML
 ```
 
 Key namespaces (`loss/`, `eval/`, `timing/`, ...) become chart groups / TUI
 pages automatically.
+
+### Grouping & linking runs to compare
+
+```python
+tlog.init(project="vitok", name="lr-3e-4", group="lr-sweep")   # tag at init
+```
+
+```bash
+tlog lr-sweep                       # overlay every run in the group, live
+tlog link big-models vae-L vae-H    # save an ad-hoc set (an agent can build these)
+tlog sets                           # list saved sets
+tlog big-models                     # view the set; `r`/`v` cycle focus / hide runs
+```
+
+## The terminal review loop (you ↔ your coding agent)
+
+A run is just files, so a coding agent on the same cluster can already read your
+metrics and images directly. The new half is letting it **show you things and
+collect your feedback without anyone opening a browser**:
+
+```bash
+# the agent renders an analysis (prose + live charts/images) in your terminal,
+# then drops you into $EDITOR to comment section-by-section:
+tlog review analysis.md
+
+# you type feedback under the section headings, save, quit. The agent reads it:
+tlog comments --doc analysis.md --json     # open comments, machine-readable
+tlog resolve <id> -m "fixed"               # mark one done after addressing it
+```
+
+Comments aren't only for docs. Anything can be a target, and they all land in
+one append-only store (`<runs>/.tlog/comments.jsonl`):
+
+```bash
+tlog comment run:demo/baseline@1000:eval/recon -m "mode collapse here"
+tlog comment file:model.py:42 -m "this init looks wrong"
+```
+
+…and inside `tlog watch`, press **`c`** to comment on the focused run/chart/image
+right there — a `✎N` badge marks runs with open comments. One loop: the agent
+shows (`tlog show`/`review`), you comment (`$EDITOR`), the agent reads
+(`tlog comments --json`) and revises.
 
 ## What gets captured
 
@@ -142,14 +205,17 @@ framework versions are read from `sys.modules` instead of importing anything.
 
 ### Preemption-safe by construction
 
-SLURM requeues a preempted job with the same job id and bumps
-`SLURM_RESTART_COUNT`. `init(resume="auto")` (the default) detects that,
-finds the run directory it created before the preemption, and keeps
-appending — recording a restart event in `meta.json`. Restarting from an
-older checkpoint re-logs some steps; instead of rewriting files (dangerous),
-**readers keep the last value logged per (metric, step)**, so charts come out
-continuous and the storage stays strictly append-only. Explicit resume:
-`tlog.init(id="a1b2c3", resume="must")`.
+By default a rerun **re-attaches by name**: `init(project="p", name="exp")`
+twice points at the same run directory and keeps appending, instead of
+littering `runs/` with parallel copies. SLURM requeues (same job id, bumped
+`SLURM_RESTART_COUNT`) re-attach the same way and record a restart event in
+`meta.json`. Restarting from an older checkpoint re-logs some steps; instead of
+rewriting files (dangerous), **readers keep the last value logged per (metric,
+step)**, so a requeue continues forward and a from-scratch rerun overwrites the
+overlapping steps — storage stays strictly append-only either way. Want a fresh
+parallel run? `new=True` (or a new name). Clean slate in the same dir?
+`reset=True`. Explicit id resume still works: `tlog.init(id="a1b2c3",
+resume="must")`.
 
 ### The read path is one engine with three faces
 
@@ -209,19 +275,16 @@ pane and scrolls when a group has more charts than fit.
 - **Compare runs**: `tlog watch baseline high-lr` (or name a project dir to
   take all its runs) overlays every metric wandb-style, one color per run,
   with a legend line. The `r` key cycles which run the console page shows.
-- **Media page**: logged images render *in the terminal* — by default as
-  half-block thumbnails (`▀` + 24-bit color), which work in every terminal
-  including through tmux over SSH. Runs are columns, steps are rows, exactly
-  like the web media tab. On kitty/Ghostty (kitty graphics protocol) or
-  iTerm2/WezTerm (inline images), true pixel images are used automatically —
-  except inside tmux, which usually eats those escapes, so tmux gets
-  half-block unless you force a protocol with `--images kitty|iterm2`.
-  (`--images off` hides the page.)
+- **Media page**: logged images render *in the terminal* — true pixel images on
+  Ghostty/kitty/iTerm2/WezTerm (incl. through tmux with `allow-passthrough`, see
+  Install), half-block thumbnails everywhere else. Runs are columns, steps are
+  rows, like the web media tab. (`--images off` hides the page.)
 
 Keys: `←/→` pages · `↑/↓` (or `j/k`) scroll charts / media steps / console
-history · `m` cycle media key · `r` cycle focused run · `1`–`9` force column
-count, `0` auto (or `--cols N`) · `s` smoothing (EMA 0 → 0.6 → 0.9 → 0.99) ·
-`l` log scale · `q` quit.
+history · `m` cycle media key · `r` cycle focused run · `v` hide/show the focused
+run · `c` comment on the focused run/view · `1`–`9` force column count, `0` auto
+(or `--cols N`) · `s` smoothing (EMA 0 → 0.6 → 0.9 → 0.99) · `l` log scale ·
+`q` quit.
 
 **`tlog serve [root]`** — open `http://localhost:8585` through VS Code Remote
 (auto port-forward) or `ssh -L 8585:localhost:8585 cluster`. Multi-run
@@ -272,32 +335,27 @@ runs and it can write the analysis *and* the page that shows the evidence
 ## Let a coding agent review your runs
 
 Because a run is nothing but files on disk — `metrics.jsonl`, `config.json`,
-PNGs under `media/` — a coding agent (Claude Code, etc.) sitting on the same
-cluster can inspect a run with no API key, no server, and no browser: it
-greps the metrics, opens the images, and reads the config directly. `tlog
-report` is the other half of that loop — it gives the agent a way to *hand
-back* what it found as something you can actually look at.
+PNGs under `media/` — a coding agent (Claude Code, etc.) on the same cluster can
+inspect a run with no API key, no server, and no browser. The review loop then
+happens entirely in the terminal:
 
-A typical remote-cluster workflow:
+> "Compare `baseline` and `high-lr`. Look at the loss curves and the eval recon
+> images, then write up whether the higher LR helped."
 
-```bash
-pip install "git+https://github.com/philippe-eecs/tlog"   # on the cluster
-# ... training writes runs to ./runs as usual ...
-```
+1. The agent reads the JSONL and PNGs, writes `analysis.md` (prose plus
+   `chart`/`table`/`images` blocks), and runs **`tlog review analysis.md`** — the
+   charts and side-by-side reconstructions render right in your pane (full-res on
+   Ghostty), then `$EDITOR` opens with a comment slot per section.
+2. You type reactions under the sections that matter and save. The agent runs
+   **`tlog comments --doc analysis.md --json`**, addresses each point, marks them
+   `tlog resolve`d, and revises the doc.
+3. Repeat until you're happy — then `tlog report analysis.md a b -o out.html` if
+   you also want a shareable file for your laptop.
 
-Then, in a Claude Code session on that cluster:
-
-> "Compare `baseline` and `high-lr`. Look at the loss curves and the eval
-> recon images, then write me a `tlog report` with your read on whether the
-> higher LR helped."
-
-The agent reads the JSONL and the PNGs, writes a `spec.md` with prose plus
-`chart`/`table`/`images` blocks, runs `tlog report spec.md baseline high-lr`,
-and you get a single self-contained `spec.html` — its analysis up top, the
-charts and side-by-side reconstructions as evidence below. scp it to your
-laptop, skim it, and reply with feedback; the agent revises the spec and
-re-renders. The diagrams, charts, and logs are all in one reviewable file,
-and the agent never needed anything but the run directory.
+The same loop works on runs directly (`tlog baseline`, press `c`) and on source
+(`tlog comment file:model.py:42 -m "…"`). The agent never needed anything but the
+run directory and your terminal. See `examples/review.md` for a sample doc and
+`examples/report.md` for the HTML-report form.
 
 ## Demo without a GPU
 

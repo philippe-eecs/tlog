@@ -314,74 +314,74 @@ def _note(msg: str) -> str:
     return f'<div class="note">⚠ {html.escape(msg)}</div>'
 
 
-def _render_chart(ctx: _Ctx, params: dict) -> str:
+# -- block data gathering (backend-agnostic; reused by the terminal renderer) -----
+
+
+def chart_series(
+    ctx: _Ctx, params: dict
+) -> tuple[str, list[tuple[str, int, list[int], list[float]]]] | str:
+    """(key, [(run_name, color_idx, steps, values)]) for a chart block, or an
+    error message. Emitters downsample as needed for their target."""
     key = params.get("key")
     if not key:
-        return _note("chart block needs `key:`")
+        return "chart block needs `key:`"
     runs = ctx.runs_for(params)
     if isinstance(runs, str):
-        return _note(runs)
+        return runs
     series = []
     for info in runs:
         sr = ctx.reader(info).series.get(key)
         if sr is None or not len(sr):
             continue
         steps, values = sr.points()
-        s, mean, _, _ = downsample(steps, values, MAX_CHART_POINTS)
-        series.append((info.name, ctx.color(info), s, mean))
+        series.append((info.name, ctx.color(info), steps, values))
     if not series:
-        return _note(f"no data for {key!r}")
-    return svg_chart(
-        series,
-        smooth=float(params.get("smooth", 0) or 0),
-        logy=_as_bool(params.get("logy", "")),
-        title=params.get("title", key),
-    )
+        return f"no data for {key!r}"
+    return key, series
 
 
-def _render_table(ctx: _Ctx, params: dict) -> str:
+def table_cell(rd, info: RunInfo, spec: str) -> str:
+    """Plain (unescaped) value for one table column spec, e.g. 'eval/fid min'
+    or 'config.lr'."""
+    if spec.startswith("config."):
+        return str(info.config.get(spec[len("config."):], "—"))
+    parts = spec.rsplit(None, 1)
+    key, agg = (parts[0], parts[1]) if len(parts) == 2 and parts[1] in (
+        "min", "max", "last") else (spec, "last")
+    sr = rd.series.get(key)
+    if sr is None or not len(sr):
+        return "—"
+    _, values = sr.points()
+    v = {"min": min, "max": max, "last": lambda x: x[-1]}[agg](values)
+    return _fmt(v)
+
+
+def table_data(
+    ctx: _Ctx, params: dict
+) -> tuple[list[str], list[tuple[int, str, str, object, list[str]]]] | str:
+    """(columns, [(color_idx, name, status, last_step, [cell strings])]) or err."""
     runs = ctx.runs_for(params)
     if isinstance(runs, str):
-        return _note(runs)
+        return runs
     cols = _as_list(params.get("columns", ""))
-
-    def cell(info: RunInfo, spec: str) -> str:
-        if spec.startswith("config."):
-            v = info.config.get(spec[len("config."):], "—")
-            return html.escape(str(v))
-        parts = spec.rsplit(None, 1)
-        key, agg = (parts[0], parts[1]) if len(parts) == 2 and parts[1] in (
-            "min", "max", "last") else (spec, "last")
-        sr = ctx.reader(info).series.get(key)
-        if sr is None or not len(sr):
-            return "—"
-        _, values = sr.points()
-        v = {"min": min, "max": max, "last": lambda x: x[-1]}[agg](values)
-        return _fmt(v)
-
-    head = "".join(f"<th>{html.escape(c)}</th>" for c in ["run", "status", "step"] + cols)
     rows = []
     for info in runs:
         rd = ctx.reader(info)
-        dot = f'<i class="dot" style="background:{_PALETTE[ctx.color(info) % len(_PALETTE)]}"></i>'
-        tds = [
-            f"<td>{dot}{html.escape(info.name)}</td>",
-            f"<td>{info.status}</td>",
-            f"<td>{rd.last_step if rd.last_step is not None else '—'}</td>",
-        ]
-        tds += [f"<td>{cell(info, c)}</td>" for c in cols]
-        rows.append(f"<tr>{''.join(tds)}</tr>")
-    return f'<table><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table>'
+        cells = [table_cell(rd, info, c) for c in cols]
+        rows.append((ctx.color(info), info.name, info.status, rd.last_step, cells))
+    return cols, rows
 
 
-def _render_images(ctx: _Ctx, params: dict, max_image_px: int) -> str:
+def images_data(
+    ctx: _Ctx, params: dict
+) -> tuple[str, list[RunInfo], list[int], list[dict[int, dict]]] | str:
+    """(key, runs, wanted_steps, per_run_by_step) for an images block, or err."""
     key = params.get("key")
     if not key:
-        return _note("images block needs `key:`")
+        return "images block needs `key:`"
     runs = ctx.runs_for(params)
     if isinstance(runs, str):
-        return _note(runs)
-
+        return runs
     per_run: list[dict[int, dict]] = []
     steps: set[int] = set()
     for info in runs:
@@ -393,14 +393,60 @@ def _render_images(ctx: _Ctx, params: dict, max_image_px: int) -> str:
         per_run.append(by_step)
         steps.update(by_step)
     if not steps:
-        return _note(f"no images for {key!r}")
-
+        return f"no images for {key!r}"
     wanted = sorted(steps, reverse=True)
     if "steps" in params:
         ask = [int(float(s)) for s in _as_list(params["steps"])]
         wanted = [s for s in wanted if s in ask]
     if "last" in params:
         wanted = wanted[: int(params["last"])]
+    return key, runs, wanted, per_run
+
+
+# -- HTML emitters ---------------------------------------------------------------
+
+
+def _render_chart(ctx: _Ctx, params: dict) -> str:
+    got = chart_series(ctx, params)
+    if isinstance(got, str):
+        return _note(got)
+    key, series = got
+    drawn = []
+    for name, ci, steps, values in series:
+        s, mean, _, _ = downsample(steps, values, MAX_CHART_POINTS)
+        drawn.append((name, ci, s, mean))
+    return svg_chart(
+        drawn,
+        smooth=float(params.get("smooth", 0) or 0),
+        logy=_as_bool(params.get("logy", "")),
+        title=params.get("title", key),
+    )
+
+
+def _render_table(ctx: _Ctx, params: dict) -> str:
+    got = table_data(ctx, params)
+    if isinstance(got, str):
+        return _note(got)
+    cols, rows = got
+    head = "".join(f"<th>{html.escape(c)}</th>" for c in ["run", "status", "step"] + cols)
+    out_rows = []
+    for ci, name, status, step, cells in rows:
+        dot = f'<i class="dot" style="background:{_PALETTE[ci % len(_PALETTE)]}"></i>'
+        tds = [
+            f"<td>{dot}{html.escape(name)}</td>",
+            f"<td>{html.escape(status)}</td>",
+            f"<td>{step if step is not None else '—'}</td>",
+        ]
+        tds += [f"<td>{html.escape(c)}</td>" for c in cells]
+        out_rows.append(f"<tr>{''.join(tds)}</tr>")
+    return f'<table><thead><tr>{head}</tr></thead><tbody>{"".join(out_rows)}</tbody></table>'
+
+
+def _render_images(ctx: _Ctx, params: dict, max_image_px: int) -> str:
+    got = images_data(ctx, params)
+    if isinstance(got, str):
+        return _note(got)
+    key, runs, wanted, per_run = got
 
     head = "<th></th>" + "".join(
         f'<th><i class="dot" style="background:{_PALETTE[ctx.color(r) % len(_PALETTE)]}"></i>'

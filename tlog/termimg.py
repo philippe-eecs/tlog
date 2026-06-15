@@ -1,14 +1,16 @@
 """Render images in the terminal.
 
-Primary backend is half-block rendering — each cell shows two vertical pixels
-via `▀` with 24-bit fg/bg colors — which works in every terminal, including
-through tmux over SSH. When a capable terminal is confidently detected (and
-we're NOT inside tmux, which usually eats the escapes), the kitty or iTerm2
-graphics protocols are used instead for true pixel images.
+True-pixel rendering uses the kitty or iTerm2 graphics protocols when a capable
+host terminal is detected (kitty, Ghostty, iTerm2, WezTerm). These also work
+*inside tmux* when `allow-passthrough` is on — we wrap the escapes in tmux's
+DCS passthrough (see `tmux_passthrough`). Inside tmux set `TLOG_TERM=ghostty`
+(or kitty/iterm2) so we know the outer terminal can show images, since tmux
+hides the usual signals. The universal fallback is half-block rendering — each
+cell shows two vertical pixels via `▀` with 24-bit fg/bg colors — which renders
+in any terminal, including plain SSH.
 
-PNG decoding uses PIL when installed; otherwise a pure-stdlib decoder covers
-the PNGs tlog itself writes (8-bit gray/RGB/RGBA, non-interlaced) and typical
-PIL output.
+Image decoding uses Pillow (a hard dependency); a pure-stdlib PNG decoder
+remains as a fallback for the 8-bit gray/RGB/RGBA PNGs tlog itself writes.
 """
 
 from __future__ import annotations
@@ -185,7 +187,7 @@ def kitty_delete_all() -> str:
     """Delete all visible placements. Lowercase d=a keeps the transmitted
     image data alive — uppercase would free it and break later a=p
     placements that reuse the cached ids."""
-    return "\x1b_Ga=d,d=a,q=2\x1b\\"
+    return _wrap("\x1b_Ga=d,d=a,q=2\x1b\\")
 
 
 def render_kitty(
@@ -194,7 +196,7 @@ def render_kitty(
     """Place an image at the cursor, scaled into cols x rows cells.
     png_bytes=None places an already-transmitted image by id."""
     if png_bytes is None:
-        return f"\x1b_Ga=p,i={image_id},c={cols},r={rows},q=2\x1b\\"
+        return _wrap(f"\x1b_Ga=p,i={image_id},c={cols},r={rows},q=2\x1b\\")
     payload = base64.b64encode(png_bytes).decode("ascii")
     chunks = [payload[i : i + 4096] for i in range(0, len(payload), 4096)]
     seqs = []
@@ -204,37 +206,102 @@ def render_kitty(
             ctrl = [f"a=T", "f=100", f"i={image_id}", f"c={cols}", f"r={rows}", "q=2"]
         ctrl.append(f"m={1 if j < len(chunks) - 1 else 0}")
         seqs.append(f"\x1b_G{','.join(ctrl)};{chunk}\x1b\\")
-    return "".join(seqs)
+    return _wrap("".join(seqs))
 
 
 def render_iterm2(png_bytes: bytes, width_cells: int) -> str:
     payload = base64.b64encode(png_bytes).decode("ascii")
-    return (
+    return _wrap(
         f"\x1b]1337;File=inline=1;width={width_cells};preserveAspectRatio=1;"
         f"size={len(png_bytes)}:{payload}\x07"
     )
 
 
-# -- backend detection -----------------------------------------------------------
+# -- backend detection + tmux passthrough ----------------------------------------
 
 BACKENDS = ("auto", "halfblock", "kitty", "iterm2", "off")
 
 
-def detect_backend(force: str = "auto") -> str:
-    """Pick an image backend. Inside tmux/screen the graphics protocols are
-    usually swallowed, so we force half-block there unless overridden."""
-    if force != "auto":
-        return force
+def in_tmux() -> bool:
+    return bool(os.environ.get("TMUX")) or "screen" in os.environ.get("TERM", "")
+
+
+def host_backend() -> str:
+    """Graphics capability of the *outer* terminal, ignoring tmux/screen.
+
+    Inside tmux $TERM is screen/tmux-* and $TERM_PROGRAM is "tmux", so the
+    surest signal is the explicit `TLOG_TERM` hint (set it in your shell rc);
+    we also accept env vars kitty/Ghostty sometimes export through tmux."""
     env = os.environ
-    term = env.get("TERM", "")
-    if env.get("TMUX") or "screen" in term:
-        return "halfblock"
-    if "kitty" in term or "ghostty" in term or env.get("KITTY_WINDOW_ID"):
+    hint = env.get("TLOG_TERM", "").lower()
+    if hint in ("kitty", "ghostty"):
         return "kitty"
+    if hint in ("iterm2", "iterm"):
+        return "iterm2"
+    if hint in ("halfblock", "off"):
+        return hint
+    term = env.get("TERM", "")
     prog = env.get("TERM_PROGRAM", "")
-    if prog in ("iTerm.app", "WezTerm"):
+    if (
+        env.get("KITTY_WINDOW_ID")
+        or env.get("GHOSTTY_RESOURCES_DIR")
+        or env.get("GHOSTTY_BIN_DIR")
+        or "kitty" in term
+        or "ghostty" in term
+        or prog in ("ghostty", "kitty", "WezTerm")
+    ):
+        return "kitty" if prog != "WezTerm" else "iterm2"
+    if prog == "iTerm.app":
         return "iterm2"
     return "halfblock"
+
+
+def detect_backend(force: str = "auto") -> str:
+    """Pick an image backend. The kitty/iTerm2 graphics protocols work in
+    kitty/Ghostty/iTerm2/WezTerm, and *through* tmux when `allow-passthrough`
+    is on (we wrap the escapes). Otherwise we fall back to half-block, which
+    renders in any terminal — including plain SSH."""
+    if force != "auto":
+        return force
+    host = host_backend()
+    if host in ("halfblock", "off"):
+        return host
+    if in_tmux() and not passthrough_enabled():
+        return "halfblock"  # graphics would be swallowed by tmux; degrade
+    return host
+
+
+_PASSTHROUGH: bool | None = None
+
+
+def passthrough_enabled() -> bool:
+    """Whether tmux forwards raw escapes (`set -g allow-passthrough on`).
+    Outside tmux this is irrelevant and returns True. Cached after first call."""
+    global _PASSTHROUGH
+    if not os.environ.get("TMUX"):
+        return True
+    if _PASSTHROUGH is None:
+        import subprocess
+
+        try:
+            out = subprocess.run(
+                ["tmux", "show-options", "-gv", "allow-passthrough"],
+                capture_output=True, text=True, timeout=1.0,
+            ).stdout.strip()
+            _PASSTHROUGH = out in ("on", "all")
+        except (OSError, ValueError, subprocess.SubprocessError):
+            _PASSTHROUGH = False
+    return _PASSTHROUGH
+
+
+def tmux_passthrough(seq: str) -> str:
+    """Wrap an escape sequence so tmux forwards it verbatim to the outer
+    terminal (every ESC is doubled, the whole thing fenced in DCS tmux;...)."""
+    return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+
+
+def _wrap(seq: str) -> str:
+    return tmux_passthrough(seq) if in_tmux() else seq
 
 
 # -- cache -----------------------------------------------------------------------

@@ -40,28 +40,39 @@ def _sanitize(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._=-]+", "-", s).strip("-") or "run"
 
 
-def _find_resumable(project_dir: Path, run_id: str | None, job_id: str | None) -> Path | None:
-    """Locate an existing run dir by explicit id, or by matching SLURM job id."""
+def _find_resumable(
+    project_dir: Path,
+    run_id: str | None,
+    job_id: str | None,
+    name: str | None = None,
+) -> Path | None:
+    """Locate an existing run dir to re-attach to. Priority: explicit id, then
+    matching SLURM job id, then the most recent run with the same name — so a
+    rerun of `(project, name)` continues that run instead of forking a new one."""
     if not project_dir.is_dir():
         return None
-    candidates = []
+    import json
+
+    job_matches, name_matches = [], []
     for d in project_dir.iterdir():
         meta_path = d / "meta.json"
         if not meta_path.is_file():
             continue
         if run_id and d.name.endswith(f"__{run_id}"):
             return d
-        if job_id:
-            try:
-                import json
-
-                m = json.loads(meta_path.read_text())
-            except (OSError, ValueError):
-                continue
-            if m.get("env", {}).get("slurm", {}).get("SLURM_JOB_ID") == job_id:
-                candidates.append((m.get("created_at", 0), d))
-    if candidates:
-        return max(candidates)[1]
+        try:
+            m = json.loads(meta_path.read_text())
+        except (OSError, ValueError):
+            m = {}
+        created = m.get("created_at", 0)
+        if job_id and m.get("env", {}).get("slurm", {}).get("SLURM_JOB_ID") == job_id:
+            job_matches.append((created, d))
+        if name and d.name.split("__", 1)[0] == name:
+            name_matches.append((created, d))
+    if job_matches:
+        return max(job_matches)[1]
+    if name_matches:
+        return max(name_matches)[1]
     return None
 
 
@@ -76,6 +87,9 @@ class Run:
         dir: str | Path | None = None,
         id: str | None = None,
         resume: str = "auto",
+        group: str | None = None,
+        new: bool = False,
+        reset: bool = False,
         capture_console: bool = True,
         system_metrics: bool = True,
         system_interval: float = 10.0,
@@ -83,26 +97,31 @@ class Run:
         root = Path(dir or os.environ.get("TLOG_DIR", "./runs")).expanduser()
         project = _sanitize(project)
         project_dir = root / project
+        want_name = _sanitize(name) if name else None
 
         slurm_job = os.environ.get("SLURM_JOB_ID")
-        is_requeue = int(os.environ.get("SLURM_RESTART_COUNT", "0") or 0) > 0
+        # `new=True` forces a fresh parallel run; otherwise we re-attach by
+        # explicit id, SLURM job, or — by default — a matching name.
         existing = None
-        if resume == "must" or (resume == "auto" and (id or is_requeue)):
-            existing = _find_resumable(project_dir, id, slurm_job)
+        if not new and resume != "never":
+            existing = _find_resumable(project_dir, id, slurm_job, want_name)
         if resume == "must" and existing is None:
             raise RuntimeError(
-                f"resume='must' but no existing run found (id={id!r}, "
+                f"resume='must' but no existing run found (id={id!r}, name={name!r}, "
                 f"SLURM_JOB_ID={slurm_job!r}) under {project_dir}"
             )
 
+        self.group = group
         self.resumed = existing is not None
         if existing is not None:
             self.dir = existing
             self.id = existing.name.rsplit("__", 1)[-1]
             self.name = existing.name.split("__", 1)[0]
+            if reset:
+                self._wipe_data()
         else:
             self.id = id or uuid.uuid4().hex[:6]
-            self.name = _sanitize(name) if name else generate_name()
+            self.name = want_name or generate_name()
             stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             self.dir = project_dir / f"{self.name}__{stamp}__{self.id}"
             self.dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +164,16 @@ class Run:
 
     # -- metadata -----------------------------------------------------------
 
+    def _wipe_data(self) -> None:
+        """reset=True: clear prior metrics/media so a same-name run starts clean."""
+        import shutil
+
+        for name in ("metrics.jsonl", "system.jsonl", "console.log"):
+            (self.dir / name).unlink(missing_ok=True)
+        media = self.dir / "media"
+        if media.is_dir():
+            shutil.rmtree(media, ignore_errors=True)
+
     def _init_meta(self) -> None:
         now = time.time()
         meta_path = self.dir / "meta.json"
@@ -158,12 +187,17 @@ class Run:
             m.setdefault("restarts", []).append(now)
             m["state"] = "running"
             m["env"] = _meta.capture_fast()
+            if self.group is not None:
+                m["group"] = self.group
+            else:
+                self.group = m.get("group")
             self._meta = m
         else:
             self._meta = {
                 "id": self.id,
                 "name": self.name,
                 "project": self.project,
+                "group": self.group,
                 "created_at": now,
                 "created_at_iso": datetime.datetime.now().isoformat(timespec="seconds"),
                 "state": "running",
@@ -267,6 +301,7 @@ class NoopRun:
 
     resumed = False
     id = name = project = ""
+    group = None
     dir = None
 
     def log(self, *a, **kw) -> None:

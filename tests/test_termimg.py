@@ -6,6 +6,16 @@ from tlog.media import encode_png
 from tlog import termimg
 
 
+@pytest.fixture(autouse=True)
+def _isolate_terminal(monkeypatch):
+    """Detection/emitter tests must not depend on the terminal running pytest
+    (e.g. Ghostty leaks GHOSTTY_*; running inside tmux would wrap escapes)."""
+    for var in ("TMUX", "TERM", "TERM_PROGRAM", "KITTY_WINDOW_ID",
+                "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR", "TLOG_TERM"):
+        monkeypatch.delenv(var, raising=False)
+    termimg._PASSTHROUGH = None
+
+
 def gradient_png(w=96, h=96):
     pixels = bytearray()
     for y in range(h):
@@ -67,13 +77,15 @@ def test_render_halfblock_geometry():
 
 
 def test_detect_backend(monkeypatch):
-    for var in ("TMUX", "TERM", "TERM_PROGRAM", "KITTY_WINDOW_ID"):
-        monkeypatch.delenv(var, raising=False)
-
     monkeypatch.setenv("TERM", "xterm-kitty")
     assert termimg.detect_backend() == "kitty"
+
+    # inside tmux: half-block unless allow-passthrough is on, then kitty (wrapped)
     monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
-    assert termimg.detect_backend() == "halfblock"  # tmux eats the protocol
+    monkeypatch.setattr(termimg, "passthrough_enabled", lambda: False)
+    assert termimg.detect_backend() == "halfblock"
+    monkeypatch.setattr(termimg, "passthrough_enabled", lambda: True)
+    assert termimg.detect_backend() == "kitty"
     assert termimg.detect_backend(force="kitty") == "kitty"  # explicit override
     monkeypatch.delenv("TMUX")
 
@@ -85,6 +97,25 @@ def test_detect_backend(monkeypatch):
     monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
     assert termimg.detect_backend() == "halfblock"
     assert termimg.detect_backend(force="off") == "off"
+
+
+def test_detect_backend_ghostty_through_tmux(monkeypatch):
+    # the headline case: Ghostty + tmux. TERM is screen-*, but the TLOG_TERM
+    # hint tells us the outer terminal can show pixels.
+    monkeypatch.setenv("TERM", "screen-256color")
+    monkeypatch.setenv("TLOG_TERM", "ghostty")
+    monkeypatch.setattr(termimg, "passthrough_enabled", lambda: True)
+    assert termimg.detect_backend() == "kitty"
+    monkeypatch.setattr(termimg, "passthrough_enabled", lambda: False)
+    assert termimg.detect_backend() == "halfblock"
+
+
+def test_tmux_passthrough_wrapping(monkeypatch):
+    monkeypatch.setenv("TMUX", "x")
+    seq = termimg.render_iterm2(b"abcd", width_cells=10)
+    assert seq.startswith("\x1bPtmux;") and seq.endswith("\x1b\\")
+    assert "\x1b\x1b" in seq  # inner ESCs doubled for tmux
+    assert termimg.kitty_delete_all().startswith("\x1bPtmux;")
 
 
 def test_kitty_emitter_chunking():

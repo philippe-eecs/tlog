@@ -59,6 +59,10 @@ class RunInfo:
     def label(self) -> str:
         return f"{self.name}__{self.id}"
 
+    @property
+    def group(self) -> str | None:
+        return self.meta.get("group")
+
 
 def _is_run_dir(p: Path) -> bool:
     return (p / "meta.json").is_file()
@@ -127,6 +131,103 @@ def latest_run(root: str | Path) -> RunInfo | None:
         return None
     running = [r for r in runs if r.status == "running"]
     return running[0] if running else runs[0]
+
+
+# -- groups + saved sets ------------------------------------------------------
+
+
+def _safe(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._=-]+", "-", name).strip("-") or "set"
+
+
+def runs_in_group(root: str | Path, group: str) -> list[RunInfo]:
+    """Every run tagged `group=` at init() with this name (newest first)."""
+    return [r for r in find_runs(root) if r.group == group]
+
+
+def _sets_dir(root: str | Path) -> Path:
+    return Path(root).expanduser() / ".tlog" / "sets"
+
+
+def set_path(root: str | Path, name: str) -> Path:
+    return _sets_dir(root) / f"{_safe(name)}.json"
+
+
+def list_sets(root: str | Path) -> list[dict]:
+    out = []
+    d = _sets_dir(root)
+    if not d.is_dir():
+        return out
+    for p in sorted(d.glob("*.json")):
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        out.append({"name": p.stem, "runs": data.get("runs", []),
+                    "note": data.get("note", "")})
+    return out
+
+
+def load_set(root: str | Path, name: str) -> list[RunInfo]:
+    p = set_path(root, name)
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return []
+    runs = []
+    for ref in data.get("runs", []):
+        info = _load_run(Path(ref).expanduser())
+        if info:
+            runs.append(info)
+    return runs
+
+
+def save_set(
+    root: str | Path, name: str, runs: list[RunInfo], note: str = ""
+) -> Path:
+    p = set_path(root, name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(
+        {"name": name, "note": note, "runs": [str(r.path) for r in runs]}, indent=2
+    ), encoding="utf-8")
+    return p
+
+
+def link_runs(
+    root: str | Path, name: str, specs: list[str], note: str = ""
+) -> tuple[int, int]:
+    """Create or append to a saved set. Returns (added, total)."""
+    existing = load_set(root, name)
+    have = {str(r.path) for r in existing}
+    added = 0
+    for spec in specs:
+        for info in resolve_runs(spec, root):
+            if str(info.path) not in have:
+                existing.append(info)
+                have.add(str(info.path))
+                added += 1
+    save_set(root, name, existing, note)
+    return added, len(existing)
+
+
+def resolve_runs(spec: str, root: str | Path = ".") -> list[RunInfo]:
+    """Resolve a token to one or more runs: a project dir, a saved set, a
+    group tag, or a single run (path / id / name). Empty list if nothing
+    matches. This is what `tlog <token>` and multi-run viewers use."""
+    for base in (Path(spec).expanduser(), Path(root) / spec):
+        if base.is_dir() and not _is_run_dir(base):
+            rs = find_runs(base)
+            if rs:
+                return rs
+    if set_path(root, spec).is_file():
+        runs = load_set(root, spec)
+        if runs:
+            return runs
+    grouped = runs_in_group(root, spec)
+    if grouped:
+        return grouped
+    info = resolve_run(spec, root)
+    return [info] if info else []
 
 
 # -- incremental metrics reading ----------------------------------------------

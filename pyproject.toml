@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tlog-ml"
-version = "0.2.0"
-description = "Lightweight, local-first experiment logger for neural network training — wandb-shaped API, zero deps, terminal + HTML + web viewers"
+version = "0.3.0"
+description = "Local-first experiment logger + terminal review buddy — wandb-shaped logging, full-res images/markdown in the terminal, and an editor-based comment loop for human↔agent feedback"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -24,10 +24,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: System :: Logging",
 ]
-dependencies = []
+dependencies = ["pillow>=9.0"]  # robust full-res image decode/encode in the terminal
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pillow", "numpy"]  # widen test coverage (PIL/array paths)
+video = ["imageio[ffmpeg]>=2.25"]  # `tlog show clip.mp4`: bundled ffmpeg, no system binary
+dev = ["pytest>=7.0", "numpy"]  # widen test coverage (array image paths)
 
 [project.urls]
 Repository = "https://github.com/philippe-eecs/tlog"

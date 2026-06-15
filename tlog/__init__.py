@@ -20,7 +20,7 @@ from typing import Any
 
 from .run import NoopRun, Run
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["init", "log", "log_images", "finish", "run", "Run", "NoopRun"]
 
 run: Run | NoopRun | None = None  # the active run, set by init()
@@ -33,18 +33,29 @@ def init(
     dir: str | None = None,
     id: str | None = None,
     resume: str = "auto",
+    group: str | None = None,
+    new: bool = False,
+    reset: bool = False,
     capture_console: bool = True,
     system_metrics: bool = True,
     rank_zero_only: bool = True,
 ) -> Run | NoopRun:
-    """Start (or resume) a run. On non-zero ranks (per the RANK env var set by
-    torchrun/SLURM) returns a no-op run unless rank_zero_only=False.
+    """Start (or re-attach to) a run. On non-zero ranks (per the RANK env var
+    set by torchrun/SLURM) returns a no-op run unless rank_zero_only=False.
 
-    resume: "auto"  — resume iff an explicit `id` is given or this process is a
-                      SLURM requeue (SLURM_RESTART_COUNT > 0) of a job that
-                      already created a run; otherwise start fresh.
-            "must"  — resume an existing run or raise.
-            "never" — always start a fresh run.
+    By default a rerun with the same (project, name) RE-ATTACHES to that run's
+    directory and appends to it — a SLURM requeue continues forward, and a
+    from-scratch rerun overwrites overlapping steps (last value per step wins).
+    To keep the old behaviour of a fresh parallel run, pass a new name or
+    new=True.
+
+    resume: "auto"  — re-attach by explicit `id`, SLURM requeue, or matching
+                      name; otherwise start fresh.
+            "must"  — re-attach to an existing run or raise.
+            "never" — always start a fresh run (same as new=True).
+    group:  tag this run so `tlog <group>` overlays every run that shares it.
+    new:    force a fresh run even if a same-name run exists.
+    reset:  re-attach to the same dir but wipe prior metrics/media first.
     """
     global run
     if rank_zero_only and int(os.environ.get("RANK", "0") or 0) != 0:
@@ -59,6 +70,9 @@ def init(
         dir=dir,
         id=id,
         resume=resume,
+        group=group,
+        new=new,
+        reset=reset,
         capture_console=capture_console,
         system_metrics=system_metrics,
     )

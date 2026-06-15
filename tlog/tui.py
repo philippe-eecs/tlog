@@ -16,56 +16,28 @@ import sys
 import time
 
 from . import termimg
+from .chart import (
+    BOLD,
+    ChartSpec,
+    DIM,
+    RESET,
+    render_chart,
+)
+from .chart import PALETTE as _PALETTE
+from .chart import SERIES_COLORS as _SERIES_COLORS
+from .chart import SMOOTH_LEVELS as _SMOOTH_LEVELS
+from .chart import fg as _fg
+from .chart import fmt_step
+from .chart import pad as _pad
 from .store import (
     JsonlTail,
     MetricsReader,
     RunInfo,
-    downsample,
-    ema,
     group_keys,
     read_console,
 )
 
-# braille dot bits indexed [y % 4][x % 2]
-_DOTS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
-
-# palette indices -> ANSI 256 color codes
-_BAND = 1
-_PALETTE = {1: 238, 2: 75, 3: 209, 4: 114, 5: 176, 6: 221, 7: 80, 8: 168}
-_SERIES_COLORS = [2, 3, 4, 5, 6, 7, 8]
-
-_SMOOTH_LEVELS = [0.0, 0.6, 0.9, 0.99]
-
 _GROUP_ORDER = ["loss", "eval", "training", "timing", "memory", "gpu", "cpu", "ram"]
-
-RESET = "\x1b[0m"
-DIM = "\x1b[2m"
-BOLD = "\x1b[1m"
-
-
-def _fg(code: int) -> str:
-    return f"\x1b[38;5;{code}m"
-
-
-def fmt_num(v: float) -> str:
-    if v != v:  # nan
-        return "nan"
-    a = abs(v)
-    if a >= 1e6 or (a < 1e-3 and a > 0):
-        return f"{v:.2e}"
-    if a >= 100:
-        return f"{v:,.1f}"
-    return f"{v:.4g}"
-
-
-def fmt_step(s: int | None) -> str:
-    if s is None:
-        return "-"
-    if s >= 1_000_000:
-        return f"{s / 1e6:.2f}M"
-    if s >= 10_000:
-        return f"{s / 1e3:.1f}k"
-    return str(s)
 
 
 def fmt_ago(seconds: float) -> str:
@@ -76,171 +48,6 @@ def fmt_ago(seconds: float) -> str:
     return f"{int(seconds // 3600)}h{int(seconds % 3600 // 60):02d}m"
 
 
-class Canvas:
-    def __init__(self, cols: int, rows: int):
-        self.cols, self.rows = cols, rows
-        self.w, self.h = cols * 2, rows * 4
-        self._bits = bytearray(cols * rows)
-        self._color = bytearray(cols * rows)
-
-    def set(self, x: int, y: int, color: int) -> None:
-        if 0 <= x < self.w and 0 <= y < self.h:
-            i = (y // 4) * self.cols + (x // 2)
-            self._bits[i] |= _DOTS[y % 4][x % 2]
-            if color != _BAND or self._color[i] == 0:
-                self._color[i] = color
-
-    def line(self, x0: int, y0: int, x1: int, y1: int, color: int) -> None:
-        dx, dy = abs(x1 - x0), -abs(y1 - y0)
-        sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
-        err = dx + dy
-        while True:
-            self.set(x0, y0, color)
-            if x0 == x1 and y0 == y1:
-                return
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0 += sx
-            if e2 <= dx:
-                err += dx
-                y0 += sy
-
-    def vline(self, x: int, y0: int, y1: int, color: int) -> None:
-        for y in range(min(y0, y1), max(y0, y1) + 1):
-            self.set(x, y, color)
-
-    def render(self) -> list[str]:
-        out = []
-        for r in range(self.rows):
-            parts = []
-            cur = -1
-            for c in range(self.cols):
-                i = r * self.cols + c
-                bits = self._bits[i]
-                if not bits:
-                    parts.append(" ")
-                    continue
-                color = self._color[i]
-                if color != cur:
-                    parts.append(_fg(_PALETTE.get(color, 250)))
-                    cur = color
-                parts.append(chr(0x2800 + bits))
-            parts.append(RESET)
-            out.append("".join(parts))
-        return out
-
-
-class ChartSpec:
-    """One metric chart: possibly several runs' series of the same key."""
-
-    def __init__(self, key: str, series: list[tuple[str, list[int], list[float], int]]):
-        self.key = key
-        self.series = series  # (run_label, steps, values, color)
-
-
-def render_chart(
-    chart: ChartSpec,
-    width: int,
-    height: int,
-    smooth: float,
-    logscale: bool,
-) -> list[str]:
-    """Render a chart into `height` lines of `width` visible chars."""
-    gutter = 9
-    plot_cols = max(8, width - gutter - 1)
-    plot_rows = max(2, height - 2)
-
-    prepared = []  # (steps, means, mins, maxs, color)
-    vmin, vmax = math.inf, -math.inf
-    for _, steps, values, color in chart.series:
-        if logscale:
-            pts = [(s, v) for s, v in zip(steps, values) if v > 0]
-            steps = [s for s, _ in pts]
-            values = [math.log10(v) for _, v in pts]
-        if not steps:
-            continue
-        s, mean, lo, hi = downsample(steps, values, plot_cols * 2)
-        mean = ema(mean, smooth)
-        prepared.append((s, mean, lo, hi, color))
-        vmin = min(vmin, min(lo))
-        vmax = max(vmax, max(hi))
-
-    # latest value in the title only when a single series is shown
-    title_val = ""
-    if len(chart.series) == 1 and chart.series[0][2]:
-        title_val = fmt_num(chart.series[0][2][-1])
-    title = f" {BOLD}{chart.key}{RESET}"
-    if title_val:
-        pad = width - len(chart.key) - len(title_val) - 3
-        title += " " * max(1, pad) + _fg(_PALETTE[chart.series[0][3]]) + title_val + RESET
-
-    if not prepared or not (vmax > -math.inf):
-        return [title] + [" " * width] * (height - 1)
-
-    if vmax == vmin:
-        vmax += 1e-12 + abs(vmax) * 1e-6
-        vmin -= 1e-12 + abs(vmin) * 1e-6
-
-    canvas = Canvas(plot_cols, plot_rows)
-    px_h = canvas.h - 1
-    px_w = canvas.w - 1
-    all_min = min(p[0][0] for p in prepared)
-    all_max = max(p[0][-1] for p in prepared)
-    span = max(all_max - all_min, 1)
-
-    def sx(step: int) -> int:
-        return round((step - all_min) / span * px_w)
-
-    def sy(v: float) -> int:
-        return px_h - round((v - vmin) / (vmax - vmin) * px_h)
-
-    single = len(prepared) == 1
-    for steps, mean, lo, hi, color in prepared:
-        if single and len(steps) < len(chart.series[0][1]):
-            for s, l, h in zip(steps, lo, hi):  # min/max band under the line
-                canvas.vline(sx(s), sy(h), sy(l), _BAND)
-        prev = None
-        for s, v in zip(steps, mean):
-            pt = (sx(s), sy(v))
-            if prev is not None:
-                canvas.line(prev[0], prev[1], pt[0], pt[1], color)
-            else:
-                canvas.set(pt[0], pt[1], color)
-            prev = pt
-
-    def ylab(v: float) -> str:
-        return fmt_num(10**v if logscale else v)
-
-    lines = [title]
-    rendered = canvas.render()
-    for r, row in enumerate(rendered):
-        if r == 0:
-            lab = ylab(vmax)
-        elif r == plot_rows - 1:
-            lab = ylab(vmin)
-        else:
-            lab = ""
-        lines.append(f"{DIM}{lab:>{gutter - 2}} {'┤' if lab else '│'}{RESET}{row}")
-    x_left = fmt_step(int(all_min))
-    x_right = fmt_step(int(all_max))
-    inner = plot_cols - len(x_left) - len(x_right)
-    lines.append(
-        " " * (gutter - 1) + DIM + x_left + " " * max(1, inner) + x_right + RESET
-    )
-    return lines[:height]
-
-
-def _visible_len(s: str) -> int:
-    import re
-
-    return len(re.sub(r"\x1b\[[0-9;]*m", "", s))
-
-
-def _pad(s: str, width: int) -> str:
-    return s + " " * max(0, width - _visible_len(s))
-
-
 class WatchApp:
     def __init__(
         self,
@@ -248,6 +55,7 @@ class WatchApp:
         interval: float = 2.0,
         ncols: int | None = None,
         images: str = "auto",
+        root: str | None = None,
     ):
         self.runs = [runs] if isinstance(runs, RunInfo) else list(runs)
         self.readers = [MetricsReader(r, include_system=True) for r in self.runs]
@@ -266,6 +74,13 @@ class WatchApp:
         self.backend = termimg.detect_backend(images)
         self._kitty_sent: set = set()
         self._last_frame: str | None = None
+        # root for the comment store; derive from a run dir if not given
+        self.root = root or (
+            str(self.runs[0].path.parent.parent) if self.runs else "."
+        )
+        self.hidden: set[int] = set()  # run indices toggled off with `v`
+        self._comment_counts: dict[str, int] = {}
+        self._old_attrs = None
 
     @property
     def multi(self) -> bool:
@@ -280,6 +95,25 @@ class WatchApp:
         for i, tail in enumerate(self._media_tails):
             self.media[i].extend(tail.read_new())
         self.runs = [_reload_info(r) for r in self.runs]
+        self._refresh_comments()
+
+    def _refresh_comments(self) -> None:
+        """Tally open comments per run so the legend/header can show a badge."""
+        try:
+            from . import comments
+
+            counts: dict[str, int] = {}
+            for c in comments.load(self.root):
+                if c.status == "open" and c.target.get("type") == "run":
+                    run = c.target.get("run", "")
+                    counts[run] = counts.get(run, 0) + 1
+            self._comment_counts = counts
+        except Exception:
+            pass
+
+    def _comment_badge(self, run: RunInfo) -> str:
+        n = self._comment_counts.get(f"{run.project}/{run.name}", 0)
+        return f" {_fg(209)}✎{n}{RESET}" if n else ""
 
     # -- pages ---------------------------------------------------------------
 
@@ -322,11 +156,11 @@ class WatchApp:
 
         smooth = _SMOOTH_LEVELS[self.smooth_idx]
         extras = " · m media-key" if current == "media" else ""
-        extras += " · r run" if self.multi and current == "console" else ""
+        extras += " · r/v run focus/hide" if self.multi else ""
         footer = (
             f" {DIM}←/→ pages · ↑/↓ scroll · 1-9 cols ({self.ncols or 'auto'})"
             f"{extras} · s smooth ({smooth:g}) · l log "
-            f"({'on' if self.logscale else 'off'}) · q quit{RESET}"
+            f"({'on' if self.logscale else 'off'}) · c comment · q quit{RESET}"
         )
 
         body_rows = rows - len(top) - 1
@@ -367,7 +201,7 @@ class WatchApp:
             slurm_s = f" · slurm {slurm}" if slurm else ""
             return (
                 f" {dots[status]}●{RESET} {BOLD}{info.project}/{info.name}{RESET}"
-                f" {DIM}({info.id}){RESET}"
+                f" {DIM}({info.id}){RESET}{self._comment_badge(info)}"
                 f" · step {BOLD}{fmt_step(reader.last_step)}{RESET}"
                 f" · {status}{slurm_s}{age}"
             )
@@ -380,12 +214,13 @@ class WatchApp:
     def _legend(self) -> str:
         parts = []
         for i, (run, reader) in enumerate(zip(self.runs, self.readers)):
-            dot = _fg(_PALETTE[self.run_color(i)]) + "●" + RESET
-            name = run.name
+            hidden = i in self.hidden
+            dot = (DIM if hidden else _fg(_PALETTE[self.run_color(i)])) + "●" + RESET
+            name = f"{DIM}{run.name}{RESET}" if hidden else run.name
             if i == self.focus:
                 name = f"\x1b[4m{name}\x1b[24m"  # underline = focused (r key)
             parts.append(
-                f"{dot} {name} {DIM}{fmt_step(reader.last_step)}"
+                f"{dot} {name}{self._comment_badge(run)} {DIM}{fmt_step(reader.last_step)}"
                 f" {run.status[:3]}{RESET}"
             )
         return " " + "   ".join(parts)
@@ -409,6 +244,8 @@ class WatchApp:
     def _series_for(self, key: str) -> list[tuple[str, list[int], list[float], int]]:
         series = []
         for i, (run, reader) in enumerate(zip(self.runs, self.readers)):
+            if i in self.hidden:  # toggled off with `v`
+                continue
             s = reader.series.get(key)
             if s is None or not len(s):
                 continue
@@ -595,6 +432,52 @@ class WatchApp:
             return termimg.render_kitty(data, img_id, thumb_w, rows)
         return termimg.render_iterm2(data, thumb_w)
 
+    # -- comments --------------------------------------------------------------
+
+    def _add_comment(self, current: str) -> None:
+        """Drop out of the alt-screen, open $EDITOR, append a comment tagged to
+        the focused run and current page, then restore the dashboard."""
+        from . import comments
+
+        info = self.runs[self.focus]
+        target = {"type": "run", "run": f"{info.project}/{info.name}"}
+        if current == "media":
+            keys = self._media_keys()
+            if keys:
+                target["key"] = keys[self.media_key_idx % len(keys)]
+        elif current not in ("console", "media"):
+            target["key"] = current  # the metric-group page
+
+        # leave alt-screen + restore cooked mode for the editor
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
+        if self._old_attrs is not None:
+            import termios
+
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_attrs)
+        try:
+            raw = comments.edit_text(
+                f"\n# Comment on {info.project}/{info.name}"
+                f"{(' · ' + target['key']) if target.get('key') else ''}\n"
+                "# Lines starting with '#' are ignored.\n"
+            )
+            text = "\n".join(
+                l for l in raw.splitlines() if not l.lstrip().startswith("#")
+            ).strip()
+            if text:
+                comments.add(self.root, target, text, author="human")
+        except Exception:
+            pass
+        finally:  # re-enter alt-screen + cbreak
+            if self._old_attrs is not None:
+                import tty
+
+                tty.setcbreak(sys.stdin.fileno())
+            sys.stdout.write("\x1b[?1049h\x1b[?25l")
+            sys.stdout.flush()
+            self._last_frame = None  # force a full repaint
+            self._refresh_comments()
+
     # -- input / main loop -----------------------------------------------------
 
     def _read_key(self, timeout: float) -> str | None:
@@ -622,6 +505,7 @@ class WatchApp:
             import tty
 
             old_attrs = termios.tcgetattr(sys.stdin)
+            self._old_attrs = old_attrs
             tty.setcbreak(sys.stdin.fileno())
         sys.stdout.write("\x1b[?1049h\x1b[?25l")  # alt screen, hide cursor
         try:
@@ -664,6 +548,10 @@ class WatchApp:
                     self.scroll = 0
                 elif key == "r" and self.multi:
                     self.focus = (self.focus + 1) % len(self.runs)
+                elif key == "v" and self.multi:  # toggle focused run on/off
+                    self.hidden ^= {self.focus}
+                elif key == "c":  # leave a comment on the focused run/view
+                    self._add_comment(current)
                 elif key and key.isdigit():  # 1-9 force columns, 0 = auto
                     self.ncols = int(key) or None
         except KeyboardInterrupt:
@@ -688,5 +576,6 @@ def watch(
     interval: float = 2.0,
     ncols: int | None = None,
     images: str = "auto",
+    root: str | None = None,
 ) -> None:
-    WatchApp(runs, interval=interval, ncols=ncols, images=images).run()
+    WatchApp(runs, interval=interval, ncols=ncols, images=images, root=root).run()
